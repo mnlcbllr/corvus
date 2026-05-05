@@ -65,6 +65,7 @@ pub fn stream_chunk(s: &str) {
     stdout().flush().ok();
 }
 
+#[allow(dead_code)]
 pub fn print_code_fence(lang: &str, code: &str) {
     let label = if lang.is_empty() { "shell" } else { lang };
     execute!(
@@ -93,6 +94,7 @@ pub fn print_code_fence(lang: &str, code: &str) {
     stdout().flush().ok();
 }
 
+#[allow(dead_code)]
 pub fn print_edit_block(code: &str) {
     // Parse and render with red/green diff colors instead of plain yellow
     #[derive(PartialEq)]
@@ -151,6 +153,7 @@ pub fn print_edit_block(code: &str) {
     stdout().flush().ok();
 }
 
+#[allow(dead_code)]
 pub fn print_exec_output(result: &ExecResult) {
     if !result.stdout.is_empty() {
         execute!(
@@ -206,6 +209,7 @@ pub fn print_exec_output(result: &ExecResult) {
 }
 
 
+#[allow(dead_code)]
 pub fn print_warning(msg: &str) {
     execute!(
         stdout(),
@@ -214,6 +218,44 @@ pub fn print_warning(msg: &str) {
         ResetColor,
     )
     .ok();
+    stdout().flush().ok();
+}
+
+pub fn print_tool_call(name: &str, args_display: &str) {
+    execute!(
+        stdout(),
+        SetForegroundColor(VW_FUNC),
+        Print(format!("  ┌─ {} ─\n", name)),
+        ResetColor,
+    ).ok();
+    for line in args_display.lines() {
+        execute!(
+            stdout(),
+            SetForegroundColor(VW_FUNC),
+            Print(format!("  │ {}\n", line)),
+            ResetColor,
+        ).ok();
+    }
+    execute!(
+        stdout(),
+        SetForegroundColor(VW_FUNC),
+        Print("  └────────\n\n"),
+        ResetColor,
+    ).ok();
+    stdout().flush().ok();
+}
+
+pub fn print_tool_result(content: &str, is_error: bool) {
+    let color = if is_error { VW_ERR } else { VW_MUTED };
+    for line in content.trim_end().lines() {
+        execute!(
+            stdout(),
+            SetForegroundColor(color),
+            Print(format!("  {}\n", line)),
+            ResetColor,
+        ).ok();
+    }
+    println!();
     stdout().flush().ok();
 }
 

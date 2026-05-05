@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::process::Command;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CodeBlock {
     pub lang: String,
@@ -15,9 +16,11 @@ pub struct ExecResult {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
+    #[allow(dead_code)]
     pub timed_out: bool,
 }
 
+#[allow(dead_code)]
 pub fn extract_blocks(text: &str) -> Vec<CodeBlock> {
     let mut blocks = Vec::new();
     let mut in_fence = false;
@@ -47,6 +50,7 @@ pub fn extract_blocks(text: &str) -> Vec<CodeBlock> {
     blocks
 }
 
+#[allow(dead_code)]
 pub fn is_known_lang(lang: &str) -> bool {
     matches!(
         lang,
@@ -55,6 +59,7 @@ pub fn is_known_lang(lang: &str) -> bool {
 }
 
 /// Extract the target file path from an edit block (for confirmation prompts).
+#[allow(dead_code)]
 pub fn edit_target(code: &str) -> Option<String> {
     code.lines()
         .next()
@@ -62,13 +67,43 @@ pub fn edit_target(code: &str) -> Option<String> {
         .map(|p| p.trim().to_string())
 }
 
+pub async fn run_bash(command: &str, timeout: Duration) -> Result<ExecResult> {
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-c").arg(command);
+    run_with_timeout(cmd, timeout).await
+}
+
+pub fn apply_edit_parts(path: &str, search: &str, replace: &str) -> Result<ExecResult> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path))?;
+
+    if !content.contains(search) {
+        return Ok(ExecResult {
+            stdout: String::new(),
+            stderr: format!(
+                "SEARCH text not found in {}.\nMake sure the text matches exactly (including indentation and whitespace).",
+                path
+            ),
+            exit_code: 1,
+            timed_out: false,
+        });
+    }
+
+    let updated = content.replacen(search, replace, 1);
+    std::fs::write(path, &updated).with_context(|| format!("writing {}", path))?;
+
+    Ok(ExecResult {
+        stdout: format!("Edited {} successfully.", path),
+        stderr: String::new(),
+        exit_code: 0,
+        timed_out: false,
+    })
+}
+
+#[allow(dead_code)]
 pub async fn execute(block: &CodeBlock, timeout: Duration) -> Result<ExecResult> {
     match block.lang.as_str() {
-        "bash" | "sh" | "shell" => {
-            let mut cmd = Command::new("/bin/sh");
-            cmd.arg("-c").arg(&block.code);
-            run_with_timeout(cmd, timeout).await
-        }
+        "bash" | "sh" | "shell" => run_bash(&block.code, timeout).await,
         "python" | "py" | "python3" => {
             let mut tmp = tempfile::Builder::new().suffix(".py").tempfile()?;
             tmp.write_all(block.code.as_bytes())?;

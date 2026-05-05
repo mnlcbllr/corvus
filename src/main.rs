@@ -4,6 +4,7 @@ mod executor;
 mod ollama;
 mod prompt;
 mod terminal;
+mod tools;
 mod tui;
 mod skills;
 

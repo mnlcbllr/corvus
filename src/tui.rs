@@ -19,6 +19,31 @@ use tokio::sync::{mpsc, Mutex};
 use crate::agent::{Agent, AgentMsg};
 
 // ---------------------------------------------------------------------------
+// Multi-line input helpers
+// ---------------------------------------------------------------------------
+
+fn visual_rows(text: &str, width: usize) -> usize {
+    if width == 0 { return 1; }
+    let mut rows = 1usize;
+    let mut col = 0usize;
+    for ch in text.chars() {
+        if ch == '\n' { rows += 1; col = 0; }
+        else { col += 1; if col >= width { rows += 1; col = 0; } }
+    }
+    rows
+}
+
+fn cursor_pos(text_before: &str, width: usize) -> (u16, u16) {
+    if width == 0 { return (0, 0); }
+    let (mut row, mut col) = (0u16, 0u16);
+    for ch in text_before.chars() {
+        if ch == '\n' { row += 1; col = 0; }
+        else { col += 1; if col as usize >= width { row += 1; col = 0; } }
+    }
+    (row, col)
+}
+
+// ---------------------------------------------------------------------------
 // Slash commands registry
 // ---------------------------------------------------------------------------
 
@@ -73,9 +98,9 @@ const VW_ERR: Color = Color::Rgb(224, 112, 112);         // #E07070
 enum Item {
     UserMsg(String),
     AssistantText(String),
-    CodeFence { lang: String, code: String },
-    ConfirmPrompt { lang: String, confirmed: Option<bool> },
-    ExecOutput { stdout: String, stderr: String, exit_code: i32 },
+    ToolCall { name: String, args_display: String },
+    ConfirmPrompt { tool_name: String, confirmed: Option<bool> },
+    ToolResult { #[allow(dead_code)] name: String, content: String, is_error: bool },
     Note(String),
     Splash(String),
 }
@@ -89,6 +114,7 @@ struct App {
     input: String,
     cursor: usize,
     scroll: usize,
+    input_scroll: u16,
     auto_scroll: bool,
     model: String,
     thinking: bool,
@@ -129,6 +155,14 @@ impl App {
         }
     }
 
+    fn delete_forward(&mut self) {
+        if self.cursor < self.input.len() {
+            let ch = self.input[self.cursor..].chars().next().unwrap();
+            self.input.remove(self.cursor);
+            let _ = ch;
+        }
+    }
+
     fn append_chunk(&mut self, chunk: &str) {
         match self.items.last_mut() {
             Some(Item::AssistantText(ref mut t)) => t.push_str(chunk),
@@ -141,6 +175,17 @@ impl App {
             if let Item::ConfirmPrompt { confirmed, .. } = item {
                 *confirmed = accepted;
                 return;
+            }
+        }
+    }
+
+    fn update_last_tool_result_confirm(&mut self, accepted: bool) {
+        for item in self.items.iter_mut().rev() {
+            if let Item::ConfirmPrompt { confirmed, .. } = item {
+                if confirmed.is_none() {
+                    *confirmed = Some(accepted);
+                    return;
+                }
             }
         }
     }
@@ -174,16 +219,22 @@ impl App {
 // Rendering
 // ---------------------------------------------------------------------------
 
-fn render(f: &mut Frame, app: &App) {
+fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
     f.render_widget(Block::default().style(Style::default().fg(VW_TEXT)), area);
+
+    // Dynamic input box height: grows with content up to 8 rows + 2 borders
+    let approx_inner_w = area.width.saturating_sub(6) as usize;
+    let input_rows = visual_rows(&app.input, approx_inner_w).max(1);
+    let input_content_h = input_rows.min(8) as u16;
+    let input_box_h = input_content_h + 2;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(3),
+            Constraint::Length(input_box_h),
         ])
         .split(area);
 
@@ -198,7 +249,7 @@ fn render(f: &mut Frame, app: &App) {
         } else if app.confirming {
             "  [y] run  [n] decline".to_string()
         } else {
-            "  [/] cmds  [ctrl+t] thoughts  [↑↓] scroll  [ctrl+c] quit".to_string()
+            "  [/] cmds  [ctrl+t] thoughts  [alt+enter] newline  [↑↓] scroll  [ctrl+c] quit".to_string()
         },
     };
     
@@ -244,19 +295,32 @@ fn render(f: &mut Frame, app: &App) {
 
     let display = if app.confirming {
         Paragraph::new(Line::from(vec![
-            Span::styled("run block? ", Style::default().fg(VW_FUNC)),
+            Span::styled("call tool? ", Style::default().fg(VW_FUNC)),
             Span::styled("[y] yes   [n / esc] no", Style::default().fg(VW_MUTED)),
         ]))
     } else {
         Paragraph::new(app.input.as_str())
             .style(Style::default().fg(VW_TEXT))
+            .scroll((app.input_scroll, 0))
+            .wrap(Wrap { trim: false })
     };
     f.render_widget(display, inner);
 
-    // Cursor
+    // Cursor: compute visual position then adjust scroll to keep it in view
     if !app.confirming {
-        let cx = inner.x + app.input[..app.cursor].chars().count() as u16;
-        let cy = inner.y;
+        let iw = inner.width as usize;
+        let (cur_row, cur_col) = cursor_pos(&app.input[..app.cursor], iw);
+        let visible_h = inner.height as usize;
+
+        if (cur_row as usize) < app.input_scroll as usize {
+            app.input_scroll = cur_row;
+        } else if (cur_row as usize) >= app.input_scroll as usize + visible_h {
+            app.input_scroll = cur_row.saturating_sub(visible_h as u16 - 1);
+        }
+
+        let screen_row = cur_row.saturating_sub(app.input_scroll);
+        let cx = inner.x + cur_col;
+        let cy = inner.y + screen_row;
         if cx < inner.x + inner.width && cy < inner.y + inner.height {
             f.set_cursor_position((cx, cy));
         }
@@ -337,15 +401,24 @@ fn build_lines(items: &[Item], width: usize, show_thoughts: bool) -> Vec<Line<'s
     let mut out: Vec<Line<'static>> = Vec::new();
     let y = Style::default().fg(VW_FUNC);
     let g = Style::default().fg(VW_COMMENT);
-    let gr = Style::default().fg(VW_MUTED);
+    let _gr = Style::default().fg(VW_MUTED);
 
     for item in items {
         match item {
             Item::UserMsg(text) => {
-                out.push(Line::from(vec![
-                    Span::styled("You ❯ ".to_string(), Style::default().fg(VW_KEYWORD).add_modifier(Modifier::BOLD)),
-                    Span::raw(text.clone()),
-                ]));
+                let mut lines_iter = text.lines().peekable();
+                if let Some(first) = lines_iter.next() {
+                    out.push(Line::from(vec![
+                        Span::styled("You ❯ ".to_string(), Style::default().fg(VW_KEYWORD).add_modifier(Modifier::BOLD)),
+                        Span::raw(first.to_string()),
+                    ]));
+                }
+                for line in lines_iter {
+                    out.push(Line::from(vec![
+                        Span::styled("      ".to_string(), Style::default().fg(VW_KEYWORD)),
+                        Span::raw(line.to_string()),
+                    ]));
+                }
                 out.push(Line::from(""));
             }
             Item::AssistantText(text) => {
@@ -395,9 +468,9 @@ fn build_lines(items: &[Item], width: usize, show_thoughts: bool) -> Vec<Line<'s
                     if current_idx >= text.len() || end_idx == 0 { break; }
                 }
             }
-            Item::CodeFence { lang, code } => {
-                out.push(Line::from(Span::styled(format!("  ┌─ {} ─", lang), y)));
-                for line in code.lines() {
+            Item::ToolCall { name, args_display } => {
+                out.push(Line::from(Span::styled(format!("  ┌─ {} ─", name), y)));
+                for line in args_display.lines() {
                     out.push(Line::from(vec![
                         Span::styled("  │ ".to_string(), y),
                         Span::raw(line.to_string()),
@@ -406,30 +479,23 @@ fn build_lines(items: &[Item], width: usize, show_thoughts: bool) -> Vec<Line<'s
                 out.push(Line::from(Span::styled("  └────────".to_string(), y)));
                 out.push(Line::from(""));
             }
-            Item::ConfirmPrompt { lang, confirmed } => {
+            Item::ConfirmPrompt { tool_name, confirmed } => {
                 let (sym, color, label) = match confirmed {
                     Some(true)  => ("✓", VW_STR, "executed"),
-                    Some(false) => ("✗", VW_ERR,   "declined"),
+                    Some(false) => ("✗", VW_ERR, "declined"),
                     None        => ("?", VW_FUNC, "awaiting confirmation…"),
                 };
                 out.push(Line::from(vec![
                     Span::styled(format!("  {} ", sym), Style::default().fg(color)),
-                    Span::styled(format!("{} block — ", lang), g),
+                    Span::styled(format!("{} — ", tool_name), g),
                     Span::styled(label.to_string(), Style::default().fg(color)),
                 ]));
             }
-            Item::ExecOutput { stdout, stderr, exit_code } => {
-                for line in stdout.lines() {
-                    out.push(Line::from(Span::styled(format!("  {}", line), gr)));
+            Item::ToolResult { content, is_error, .. } => {
+                let color = if *is_error { VW_ERR } else { VW_MUTED };
+                for line in content.trim_end().lines() {
+                    out.push(Line::from(Span::styled(format!("  {}", line), Style::default().fg(color))));
                 }
-                for line in stderr.lines() {
-                    out.push(Line::from(Span::styled(
-                        format!("  {}", line),
-                        Style::default().fg(VW_ERR),
-                    )));
-                }
-                let ec_style = if *exit_code == 0 { Style::default().fg(VW_STR) } else { Style::default().fg(VW_ERR) };
-                out.push(Line::from(Span::styled(format!("  [exit {}]", exit_code), ec_style)));
                 out.push(Line::from(""));
             }
             Item::Note(text) => {
@@ -456,24 +522,26 @@ fn handle_agent_msg(msg: AgentMsg, app: &mut App) {
             app.thinking = false;
             app.append_chunk(&text);
         }
-        AgentMsg::BlockAutoRan(block) => {
-            app.items.push(Item::CodeFence { lang: block.lang.clone(), code: block.code });
-            app.items.push(Item::ConfirmPrompt { lang: block.lang, confirmed: Some(true) });
+        AgentMsg::ClearLastText => {
+            // Remove the last AssistantText item (raw JSON the model emitted as text)
+            if let Some(pos) = app.items.iter().rposition(|i| matches!(i, Item::AssistantText(_))) {
+                app.items.remove(pos);
+            }
         }
-        AgentMsg::BlockProposed { block, confirm_tx } => {
-            app.items.push(Item::CodeFence { lang: block.lang.clone(), code: block.code });
-            app.items.push(Item::ConfirmPrompt { lang: block.lang, confirmed: None });
+        AgentMsg::ToolAutoRan { name, args_display } => {
+            app.items.push(Item::ToolCall { name: name.clone(), args_display });
+            app.items.push(Item::ConfirmPrompt { tool_name: name, confirmed: Some(true) });
+        }
+        AgentMsg::ToolProposed { name, args_display, confirm_tx } => {
+            app.items.push(Item::ToolCall { name: name.clone(), args_display });
+            app.items.push(Item::ConfirmPrompt { tool_name: name, confirmed: None });
             app.confirming = true;
             app.confirm_tx = Some(confirm_tx);
         }
-        AgentMsg::BlockResult { result, .. } => {
-            app.update_confirm_prompt(Some(true));
+        AgentMsg::ToolResult { name, content, is_error } => {
+            app.update_last_tool_result_confirm(true);
             app.confirming = false;
-            app.items.push(Item::ExecOutput {
-                stdout: result.stdout,
-                stderr: result.stderr,
-                exit_code: result.exit_code,
-            });
+            app.items.push(Item::ToolResult { name, content, is_error });
         }
         AgentMsg::TurnComplete => {
             app.thinking = false;
@@ -482,10 +550,10 @@ fn handle_agent_msg(msg: AgentMsg, app: &mut App) {
         AgentMsg::Error(e) => {
             app.thinking = false;
             app.confirming = false;
-            app.items.push(Item::ExecOutput {
-                stdout: String::new(),
-                stderr: e,
-                exit_code: 1,
+            app.items.push(Item::ToolResult {
+                name: "error".to_string(),
+                content: e,
+                is_error: true,
             });
         }
     }
@@ -642,10 +710,16 @@ async fn handle_key(
 
     // Normal input mode
     match (key.modifiers, key.code) {
+        // Alt+Enter: insert newline without submitting
+        (KeyModifiers::ALT, KeyCode::Enter) => {
+            app.push_char('\n');
+        }
+
         (_, KeyCode::Enter) => {
             if app.thinking { return Ok(false); }
             let input = std::mem::take(&mut app.input);
             app.cursor = 0;
+            app.input_scroll = 0;
             if input.trim().is_empty() { return Ok(false); }
 
             // Normal turn
@@ -674,6 +748,7 @@ async fn handle_key(
         }
 
         (_, KeyCode::Backspace) => { app.delete_back(); }
+        (_, KeyCode::Delete)    => { app.delete_forward(); }
         (_, KeyCode::Left)      => { app.move_left(); }
         (_, KeyCode::Right)     => { app.move_right(); }
         (_, KeyCode::Home)      => { app.cursor = 0; }
@@ -846,6 +921,7 @@ pub async fn run(agent: Agent) -> Result<()> {
         input: String::new(),
         cursor: 0,
         scroll: 0,
+        input_scroll: 0,
         auto_scroll: true,
         model,
         thinking: false,
@@ -862,7 +938,7 @@ pub async fn run(agent: Agent) -> Result<()> {
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(80));
 
     loop {
-        terminal.draw(|f| render(f, &app))?;
+        terminal.draw(|f| render(f, &mut app))?;
 
         tokio::select! {
             _ = interval.tick() => {

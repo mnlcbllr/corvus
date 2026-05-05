@@ -5,12 +5,39 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncBufReadExt;
 use tokio_util::io::StreamReader;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolFunction {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: ToolFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallFunction {
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub function: ToolCallFunction,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 #[derive(Deserialize)]
@@ -21,12 +48,20 @@ struct ChatChunk {
 
 #[derive(Deserialize)]
 struct ChunkMsg {
+    #[serde(default)]
     content: String,
+    #[serde(default)]
+    tool_calls: Vec<ToolCall>,
 }
 
 #[derive(Deserialize)]
 struct ChatResponse {
-    message: ChunkMsg,
+    message: ChatResponseMsg,
+}
+
+#[derive(Deserialize)]
+struct ChatResponseMsg {
+    content: String,
 }
 
 #[derive(Deserialize)]
@@ -37,6 +72,19 @@ struct TagsResponse {
 #[derive(Deserialize)]
 struct ModelInfo {
     name: String,
+}
+
+fn strip_model_artifacts(s: &str) -> String {
+    const ARTIFACTS: &[&str] = &[
+        "<|im_start|>", "<|im_end|>", "<|im_sep|>",
+        "<|endoftext|>", "<|eot_id|>",
+        "<|start_header_id|>", "<|end_header_id|>",
+    ];
+    let mut out = s.to_string();
+    for token in ARTIFACTS {
+        out = out.replace(token, "");
+    }
+    out
 }
 
 pub struct OllamaClient {
@@ -70,14 +118,24 @@ impl OllamaClient {
         &self,
         model: &str,
         messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+        num_ctx: u32,
         mut on_chunk: impl FnMut(&str) -> std::ops::ControlFlow<(), ()>,
-    ) -> Result<String> {
+    ) -> Result<(String, Vec<ToolCall>)> {
         let url = format!("{}/api/chat", self.base_url);
-        let body = serde_json::json!({
+
+        let mut body = serde_json::json!({
             "model": model,
             "messages": messages,
             "stream": true,
+            "options": {
+                "num_ctx": num_ctx,
+            },
         });
+
+        if !tools.is_empty() {
+            body["tools"] = serde_json::to_value(tools).context("serializing tools")?;
+        }
 
         let resp = self
             .client
@@ -101,6 +159,8 @@ impl OllamaClient {
         let mut lines = buf_reader.lines();
 
         let mut full = String::new();
+        let mut all_tool_calls: Vec<ToolCall> = Vec::new();
+
         while let Some(line) = lines.next_line().await? {
             if line.is_empty() {
                 continue;
@@ -108,22 +168,28 @@ impl OllamaClient {
             match serde_json::from_str::<ChatChunk>(&line) {
                 Ok(chunk) => {
                     if let Some(msg) = chunk.message {
-                        full.push_str(&msg.content);
-                        if let std::ops::ControlFlow::Break(_) = on_chunk(&msg.content) {
-                            break;
+                        if !msg.content.is_empty() {
+                            let content = strip_model_artifacts(&msg.content);
+                            if !content.is_empty() {
+                                full.push_str(&content);
+                                if let std::ops::ControlFlow::Break(_) = on_chunk(&content) {
+                                    break;
+                                }
+                            }
+                        }
+                        if !msg.tool_calls.is_empty() {
+                            all_tool_calls.extend(msg.tool_calls);
                         }
                     }
                     if chunk.done {
                         break;
                     }
                 }
-                Err(_) => {
-                    // Non-JSON line (unlikely with Ollama but ignore gracefully)
-                }
+                Err(_) => {}
             }
         }
 
-        Ok(full)
+        Ok((full, all_tool_calls))
     }
 
     pub async fn chat_json(
@@ -136,7 +202,7 @@ impl OllamaClient {
             "model": model,
             "messages": messages,
             "stream": false,
-            "format": "json"
+            "format": "json",
         });
 
         let resp = self
@@ -145,13 +211,15 @@ impl OllamaClient {
             .json(&body)
             .send()
             .await
-            .context("sending json chat request")?;
+            .context("sending chat_json request")?;
 
         if !resp.status().is_success() {
-            anyhow::bail!("Ollama returned {}", resp.status());
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Ollama returned {}: {}", status, text);
         }
 
-        let data: ChatResponse = resp.json().await?;
-        Ok(data.message.content)
+        let r: ChatResponse = resp.json().await.context("parsing chat_json response")?;
+        Ok(r.message.content)
     }
 }
