@@ -1,70 +1,53 @@
 # Corvus
 
-**Corvus** is a highly autonomous, context-aware AI coding assistant designed specifically for the terminal. Built in Rust and powered by local Ollama models (such as `qwen2.5-coder:7b`), Corvus provides an elegant, interactive TUI (Terminal User Interface) modeled after professional tools like Claude Code. It allows developers to collaborate with AI seamlessly, right within their workspace.
+A terminal-native AI coding assistant written in Rust. Corvus runs entirely against local [Ollama](https://ollama.ai/) models and ships a Ratatui-based TUI for interactive, agentic coding sessions.
 
-![Corvus Splash](https://via.placeholder.com/800x400?text=Corvus+Terminal+TUI)
+![Corvus](assets/splash.png)
 
-## 🌟 Features
+## Features
 
-- **Sleek Ratatui Interface**: A polished, custom-branded terminal UI modeled tightly around Claude Code's aesthetics. Includes interactive command palettes, keyboard navigation, and beautiful syntax highlighting.
-- **Void Wing Aesthetic**: A tailored, cool-toned color palette built natively without solid backgrounds—allowing your terminal's natural transparency to shine through while highlighting text with distinct `#9580C8` primary accents.
-- **Responsive Layout Architecture**: The dashboard dynamically adapts bounding lines and separating borders directly to your custom terminal footprint while strictly adhering to a crisp dual-column splash layout array.
-- **Local AI Execution**: Uses **Ollama** locally, ensuring code privacy with zero external API calls.
-- **Autonomous Coding & Command Execution**: Capable of generating, proposing, and selectively executing terminal commands and scripts directly within the TUI.
-- **Dynamic Skill Injection**: Systematically manages context limits by dynamically resolving and injecting necessary "skills" only when context calls for them.
-- **Zero-Shot Semantic Routing**: Autonomously determines on-the-fly tool selection to streamline context processing without suffering from context bloat or "goal amnesia".
-- **Transparent Thought Process**: With `[ctrl+t]`, you can toggle displaying the AI's internal `<think>` process to better understand its reasoning.
+- **Local-first**: All inference runs through Ollama on your machine. No external API calls.
+- **Agentic loop**: Generates, proposes, and selectively executes shell commands and scripts.
+- **Dynamic skill injection**: Resolves and injects context only when a turn requires it, keeping prompts lean.
+- **Zero-shot tool routing**: Selects tools per turn without hard-coded heuristics.
+- **Thought toggle**: `Ctrl+T` shows or hides the model's `<think>` traces.
+- **Ratatui interface**: Command palette, keyboard navigation, syntax highlighting, and a transparent-friendly color scheme.
 
-## 🛠️ Installation & Setup
+## Installation
 
-Ensure you have [Rust](https://rustup.rs/) and [Ollama](https://ollama.ai/) installed on your machine.
+Requires [Rust](https://rustup.rs/) and [Ollama](https://ollama.ai/).
 
-1. **Clone the repository** (if applicable):
-   ```bash
-   git clone https://github.com/your-username/corvus.git
-   cd corvus
-   ```
+```bash
+ollama pull qwen2.5-coder:7b
+cargo build --release
+cargo run --release -- -m "qwen2.5-coder:7b"
+```
 
-2. **Pull a local LLM via Ollama**:
-   ```bash
-   ollama pull qwen2.5-coder:7b
-   ```
+## Keyboard Shortcuts
 
-3. **Build the application**:
-   ```bash
-   cargo build --release
-   ```
+| Shortcut  | Action                                  |
+|-----------|-----------------------------------------|
+| `Ctrl+C`  | Quit                                    |
+| `Ctrl+T`  | Toggle thought-process display          |
+| `/`       | Open command palette                    |
+| `↑` / `↓` | Scroll history or palette               |
+| `Enter`   | Send message or confirm selection       |
+| `Tab`     | Autocomplete                            |
+| `Esc`     | Close palette                           |
 
-4. **Run Corvus**:
-   ```bash
-   cargo run --release -- -m "qwen2.5-coder:7b"
-   ```
+## Architecture
 
-## ⌨️ TUI Keyboard Shortcuts
+| File              | Responsibility                                        |
+|-------------------|-------------------------------------------------------|
+| `src/agent.rs`    | Turn orchestration and tool selection                 |
+| `src/executor.rs` | Sandboxed script execution and output capture        |
+| `src/ollama.rs`   | Ollama daemon client                                  |
+| `src/skills.rs`   | Context-aware skill injection                         |
+| `src/prompt.rs`   | System prompt and behavioral directives               |
+| `src/tui.rs`      | Ratatui event loop and rendering                      |
 
-| Shortcut | Action                                                 |
-|----------|--------------------------------------------------------|
-| `Ctrl+C` | Quit Corvus                                            |
-| `Ctrl+T` | Toggle displaying the AI's `[thought process]`         |
-| `/`      | Bring up the command palette (`/exit`, `/model`, etc.) |
-| `[↑↓]`   | Scroll through the conversation history or palette     |
-| `[Enter]`| Send message or choose palette selection               |
+Built on `tokio`, `reqwest`, `ratatui`, and `crossterm`.
 
-## 🏗️ Architecture Overview
+## License
 
-The codebase is built on modern Rust async ecosystem (`tokio`), HTTP clients (`reqwest`), and interactive rendering (`ratatui` + `crossterm`).
-
-- `src/agent.rs`: Core agentic lifecycle, turn orchestration, and tool selection.
-- `src/executor.rs`: Secure handling of script execution constraints and stdout/stderr capturing.
-- `src/ollama.rs`: Client logic interfacing with the locally running Ollama daemon.
-- `src/skills.rs`: The skill injection layer helping manage token limits intelligently.
-- `src/prompt.rs`: System directives preventing AI behavioral drift.
-- `src/tui.rs`: The Ratatui implementation of the event loop and user interface.
-
-## 🤝 Contributing
-
-Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](#). 
-
-## 📝 License
-
-This project is licensed under the MIT License.
+MIT.
