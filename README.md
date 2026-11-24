@@ -48,6 +48,11 @@ cargo run --release -- -m "qwen2.5-coder:7b"
 
 Built on `tokio`, `reqwest`, `ratatui`, and `crossterm`.
 
+## Project links
+
+- [Corvus project overview](https://manuelcaballero.dev/projects/corvus-agent)
+- [Manuel Caballero — Full-Stack AI Engineer](https://manuelcaballero.dev)
+
 ## License
 
 MIT.
